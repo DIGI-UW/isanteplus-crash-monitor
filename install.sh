@@ -23,6 +23,7 @@ done
 
 if ! command -v jstat &>/dev/null; then
     echo "WARNING: jstat not in PATH — install a JDK (not just JRE) for JVM monitoring"
+    echo "  Set JAVA_HOME in /etc/isanteplus-monitor.conf after install"
 fi
 echo ""
 

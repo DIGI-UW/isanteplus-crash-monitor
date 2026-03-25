@@ -36,7 +36,6 @@ list_incidents() {
         echo "No incidents directory found."
         return
     fi
-    # List both directories and tar.gz (compressed old incidents)
     find "$INCIDENT_DIR" -mindepth 1 -maxdepth 1 \( -type d -o -name '*.tar.gz' \) 2>/dev/null | sort -r | head -20
     echo ""
     local count
@@ -60,18 +59,30 @@ dump_csv() {
     fi
 }
 
+# Convert ISO timestamp (2026-03-25T14:30:00) to epoch seconds
+ts_to_epoch() {
+    date -d "$1" +%s 2>/dev/null || echo "0"
+}
+
+# Convert YYYYMMDD_HHMMSS to epoch seconds
+csv_ts_to_epoch() {
+    local ts="$1"
+    # Convert 20260325_143000 -> 2026-03-25 14:30:00
+    local formatted="${ts:0:4}-${ts:4:2}-${ts:6:2} ${ts:9:2}:${ts:11:2}:${ts:13:2}"
+    date -d "$formatted" +%s 2>/dev/null || echo "0"
+}
+
 analyze_incident() {
     local incident_path="$1"
 
     if [[ ! -d "$incident_path" ]]; then
-        # Maybe it's compressed
         if [[ -f "${incident_path}.tar.gz" ]]; then
             echo -e "${YELLOW}Incident is compressed. Extracting temporarily...${RESET}"
             local tmp
             tmp=$(mktemp -d)
             tar xzf "${incident_path}.tar.gz" -C "$tmp" 2>/dev/null
             incident_path="${tmp}/$(basename "$incident_path")"
-            trap "rm -rf $tmp" EXIT
+            trap "rm -rf '$tmp'" EXIT
         else
             echo -e "${RED}Incident not found: $incident_path${RESET}"
             return 1
@@ -84,7 +95,7 @@ analyze_incident() {
     echo -e "${BOLD}${RED}=== INCIDENT: ${incident_name} ===${RESET}"
     echo ""
 
-    # ── Thread dump summary ──────────────────────────────────────────
+    # ── Thread dump summary ───────────────────────────────────────────
     if [[ -f "${incident_path}/threads.txt" ]]; then
         echo -e "${BOLD}--- Thread States ---${RESET}"
         grep 'java.lang.Thread.State:' "${incident_path}/threads.txt" 2>/dev/null | \
@@ -104,21 +115,21 @@ analyze_incident() {
         fi
     fi
 
-    # ── GC stats ─────────────────────────────────────────────────────
+    # ── GC stats ──────────────────────────────────────────────────────
     if [[ -f "${incident_path}/gc_stats.txt" ]]; then
         echo -e "${BOLD}--- GC Stats ---${RESET}"
         cat "${incident_path}/gc_stats.txt"
         echo ""
     fi
 
-    # ── Heap histogram ───────────────────────────────────────────────
+    # ── Heap histogram ────────────────────────────────────────────────
     if [[ -f "${incident_path}/heap_histo.txt" ]]; then
         echo -e "${BOLD}--- Top Heap Consumers ---${RESET}"
         head -15 "${incident_path}/heap_histo.txt"
         echo ""
     fi
 
-    # ── MySQL ────────────────────────────────────────────────────────
+    # ── MySQL ─────────────────────────────────────────────────────────
     if [[ -f "${incident_path}/processlist.txt" ]]; then
         echo -e "${BOLD}--- MySQL Process List ---${RESET}"
         local active
@@ -140,39 +151,40 @@ analyze_incident() {
         echo ""
     fi
 
-    # ── Memory ───────────────────────────────────────────────────────
+    # ── Memory ────────────────────────────────────────────────────────
     if [[ -f "${incident_path}/memory.txt" ]]; then
         echo -e "${BOLD}--- Memory ---${RESET}"
         cat "${incident_path}/memory.txt"
         echo ""
     fi
 
-    # ── Metrics CSV window ───────────────────────────────────────────
-    # Try to find the metrics CSV for the incident date
+    # ── Metrics CSV window (±5 minutes using epoch seconds) ──────────
     local incident_date
     incident_date=$(echo "$incident_name" | sed 's/T.*//' | tr -d '-')
     local csv="${SNAP_DIR}/${incident_date}/metrics.csv"
     if [[ -f "$csv" ]]; then
-        local incident_hhmmss
-        incident_hhmmss=$(echo "$incident_name" | sed 's/.*T//' | tr -d ':' | cut -c1-6)
-        echo -e "${BOLD}--- Metrics Around Incident (from continuous snapshots) ---${RESET}"
-        echo -e "${CYAN}$(head -1 "$csv")${RESET}"
-        # Show rows within ~5 min window
-        local t_num t_before t_after
-        t_num=$((10#${incident_hhmmss}))
-        t_before=$(printf "%06d" $((t_num - 500)))
-        t_after=$(printf "%06d" $((t_num + 500)))
-        tail -n +2 "$csv" | while IFS=',' read -r ts rest; do
-            row_time=$(echo "$ts" | cut -d'_' -f2)
-            if [[ -n "$row_time" ]] && [[ "$row_time" -ge "$t_before" ]] && [[ "$row_time" -le "$t_after" ]] 2>/dev/null; then
-                if [[ "$row_time" -ge "$incident_hhmmss" ]] && [[ "$row_time" -le $((t_num + 100)) ]] 2>/dev/null; then
-                    echo -e "${RED}>>> ${ts},${rest}${RESET}"
-                else
-                    echo "    ${ts},${rest}"
+        local incident_epoch
+        incident_epoch=$(ts_to_epoch "$incident_name")
+        if [[ "$incident_epoch" -gt 0 ]]; then
+            local window_before=$((incident_epoch - 300))  # 5 minutes before
+            local window_after=$((incident_epoch + 300))   # 5 minutes after
+
+            echo -e "${BOLD}--- Metrics Around Incident (±5 min) ---${RESET}"
+            echo -e "${CYAN}$(head -1 "$csv")${RESET}"
+            tail -n +2 "$csv" | while IFS=',' read -r ts rest; do
+                local row_epoch
+                row_epoch=$(csv_ts_to_epoch "$ts")
+                if [[ "$row_epoch" -ge "$window_before" ]] && [[ "$row_epoch" -le "$window_after" ]]; then
+                    # Highlight rows at or after the incident
+                    if [[ "$row_epoch" -ge "$incident_epoch" ]] && [[ "$row_epoch" -le $((incident_epoch + 60)) ]]; then
+                        echo -e "${RED}>>> ${ts},${rest}${RESET}"
+                    else
+                        echo "    ${ts},${rest}"
+                    fi
                 fi
-            fi
-        done
-        echo ""
+            done
+            echo ""
+        fi
     fi
 
     echo -e "${BOLD}=== END ===${RESET}"
@@ -201,7 +213,6 @@ case "${1:-}" in
         echo "  $0 --help                    Show this help"
         ;;
     "")
-        # Latest incident
         latest=$(find "$INCIDENT_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r | head -1 || true)
         if [[ -z "$latest" ]]; then
             echo "No incidents found in: $INCIDENT_DIR"

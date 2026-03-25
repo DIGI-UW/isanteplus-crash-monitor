@@ -16,9 +16,13 @@ MYSQL_DATABASE="openmrs"
 MYSQL_HOST="localhost"
 RETENTION_DAYS=7
 ENABLE_HEAP_DUMP=false
+TOMCAT_PATTERN="catalina.startup.Bootstrap"
 
 # Max time to wait for Tomcat to come back after a restart (in seconds)
 RESTART_TIMEOUT=300
+
+# Housekeeping throttle: only run once per hour
+_LAST_HOUSEKEEPING=0
 
 load_config() {
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -39,8 +43,7 @@ load_config() {
 }
 
 find_tomcat_pid() {
-    # Look for the Tomcat7 JVM process
-    pgrep -f 'catalina.startup.Bootstrap' | head -n 1 || true
+    pgrep -f "$TOMCAT_PATTERN" | head -n 1 || true
 }
 
 # Write a temporary MySQL option file and pass it to mysql via
@@ -49,6 +52,8 @@ mysql_cmd() {
     local tmp_cnf
     tmp_cnf=$(mktemp /tmp/isanteplus-mysql.XXXXXX)
     chmod 600 "$tmp_cnf"
+    # Ensure temp file is always cleaned up, even if mysql fails under set -e
+    trap 'rm -f "$tmp_cnf"' RETURN
 
     {
         echo "[client]"
@@ -59,11 +64,7 @@ mysql_cmd() {
         fi
     } > "$tmp_cnf"
 
-    # Ensure the temp file is cleaned up regardless of how mysql exits
     mysql --defaults-extra-file="$tmp_cnf" "$MYSQL_DATABASE" "$@"
-    local rc=$?
-    rm -f "$tmp_cnf"
-    return $rc
 }
 
 collect_diagnostics() {
@@ -109,7 +110,8 @@ collect_diagnostics() {
 
     # 6. Active transactions and lock waits
     mysql_cmd -e "SELECT * FROM information_schema.INNODB_TRX\G" > "${incident_dir}/active_trx.txt" 2>/dev/null || true
-    mysql_cmd -e "SELECT * FROM performance_schema.data_lock_waits\G" > "${incident_dir}/lock_waits.txt" 2>/dev/null || true
+    # INNODB_LOCK_WAITS exists in MySQL 5.x; data_lock_waits is MySQL 8.0+ only
+    mysql_cmd -e "SELECT * FROM information_schema.INNODB_LOCK_WAITS\G" > "${incident_dir}/lock_waits.txt" 2>/dev/null || true
 
     # 7. JVM diagnostics
     local tomcat_pid
@@ -129,7 +131,7 @@ collect_diagnostics() {
 
         # Heap dump (optional — produces large files, 1-2GB)
         if [[ "${ENABLE_HEAP_DUMP}" == "true" ]]; then
-            if jmap -J-d64 -dump:format=b,file="${incident_dir}/heap.hprof" "$tomcat_pid" 2>&1; then
+            if jmap -dump:format=b,file="${incident_dir}/heap.hprof" "$tomcat_pid" 2>&1; then
                 echo "  Captured heap dump for PID $tomcat_pid"
             else
                 echo "  Warning: jmap heap dump failed for PID $tomcat_pid" >&2
@@ -184,6 +186,14 @@ wait_for_new_pid() {
 }
 
 housekeeping() {
+    # Throttle: only run once per hour (3600 seconds)
+    local now
+    now=$(date +%s)
+    if [[ $((now - _LAST_HOUSEKEEPING)) -lt 3600 ]]; then
+        return
+    fi
+    _LAST_HOUSEKEEPING=$now
+
     # Compress incident directories older than 1 hour
     find "${OUTPUT_DIR}/incidents" -mindepth 1 -maxdepth 1 -type d \
         -mmin +60 \
@@ -220,8 +230,10 @@ main() {
         http_code=$(curl -s -o /dev/null -w "%{http_code}" \
             --max-time "$TIMEOUT" "$SESSION_URL" 2>/dev/null) || true
 
-        if [[ "$http_code" == "000" || -z "$http_code" || "$http_code" -ge 500 ]] 2>/dev/null; then
-            # Timeout, connection failure, or server error
+        # Trigger on: timeout/connection failure (000), empty, or server errors (5xx)
+        # Note: 401/403 are considered "healthy" — OpenMRS is running and responding.
+        # The -ge comparison is guarded by the earlier checks for non-numeric values.
+        if [[ "$http_code" == "000" || -z "$http_code" ]] || [[ "$http_code" =~ ^[0-9]+$ && "$http_code" -ge 500 ]]; then
             echo "$(date): $SESSION_URL unhealthy (HTTP $http_code)"
 
             local old_pid
@@ -237,7 +249,6 @@ main() {
             echo "$(date): Resuming monitoring"
         fi
 
-        # Periodic housekeeping (cheap — just find + delete)
         housekeeping
 
         sleep "$POLL_INTERVAL"

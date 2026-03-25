@@ -11,12 +11,11 @@ Both components share the same config file.
 ## Quick Start
 
 ```bash
-# Clone and install
 git clone https://github.com/ibacher/isanteplus-crash-monitor.git
 cd isanteplus-crash-monitor
 sudo ./install.sh
 
-# Edit config (set MySQL password, paths)
+# Edit config (set MySQL password, paths, JAVA_HOME)
 sudo vi /etc/isanteplus-monitor.conf
 
 # Start the crash monitor
@@ -69,8 +68,10 @@ Config file: `/etc/isanteplus-monitor.conf`
 | `RESTART_TOMCAT` | `true` | Auto-restart on crash |
 | `ENABLE_HEAP_DUMP` | `false` | Capture full heap dump (large!) |
 | `RETENTION_DAYS` | `7` | Days to keep old data |
+| `TOMCAT_PATTERN` | `catalina.startup.Bootstrap` | Pattern to find Tomcat PID |
 | `MYSQL_USER` | `root` | MySQL user |
 | `MYSQL_PASSWORD` | (empty) | MySQL password |
+| `JAVA_HOME` | (unset) | Set if JDK tools not on PATH |
 
 ## File Layout
 

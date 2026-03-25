@@ -22,11 +22,21 @@ SESSION_URL="http://localhost:8080/openmrs/ws/rest/v1/session"
 RETENTION_DAYS=7
 
 if [[ -f "$CONFIG_FILE" ]]; then
+    # Warn if config is world-readable (contains MySQL credentials)
+    local_perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null) || true
+    if [[ -n "$local_perms" && "${local_perms:1:2}" != "00" ]]; then
+        echo "Warning: $CONFIG_FILE is accessible by group/others (mode $local_perms). Consider chmod 600." >&2
+    fi
     # shellcheck source=/dev/null
     source "$CONFIG_FILE"
 fi
 
-# ── Timestamp & directories ─────────────────────────────────────────
+# Add JAVA_HOME/bin to PATH if configured
+if [[ -n "${JAVA_HOME:-}" && -d "${JAVA_HOME}/bin" ]]; then
+    export PATH="${JAVA_HOME}/bin:${PATH}"
+fi
+
+# ── Timestamp & directories ──────────────────────────────────────────
 TS_DATE=$(date +%Y%m%d)
 TS_TIME=$(date +%H%M%S)
 SNAP_BASE="${OUTPUT_DIR}/snapshots"
@@ -39,24 +49,23 @@ if [[ ! -f "$CSV" ]]; then
     echo "timestamp,heap_old_pct,mem_free_mb,mem_available_mb,load_1m,mysql_active,tomcat_pid,tomcat_rss_kb,http_status,http_time_ms" > "$CSV"
 fi
 
-# ── MySQL helper (same temp-cnf approach as main script) ────────────
+# ── MySQL helper (temp cnf file, cleaned up via trap) ────────────────
+# Create one temp cnf file for the entire script run, reused across queries.
+MYSQL_TMP_CNF=$(mktemp /tmp/isanteplus-mysql.XXXXXX)
+chmod 600 "$MYSQL_TMP_CNF"
+trap 'rm -f "$MYSQL_TMP_CNF"' EXIT
+{
+    echo "[client]"
+    echo "user=${MYSQL_USER}"
+    echo "host=${MYSQL_HOST}"
+    [[ -n "$MYSQL_PASSWORD" ]] && echo "password=${MYSQL_PASSWORD}"
+} > "$MYSQL_TMP_CNF"
+
 mysql_cmd() {
-    local tmp_cnf
-    tmp_cnf=$(mktemp /tmp/isanteplus-mysql.XXXXXX)
-    chmod 600 "$tmp_cnf"
-    {
-        echo "[client]"
-        echo "user=${MYSQL_USER}"
-        echo "host=${MYSQL_HOST}"
-        [[ -n "$MYSQL_PASSWORD" ]] && echo "password=${MYSQL_PASSWORD}"
-    } > "$tmp_cnf"
-    mysql --defaults-extra-file="$tmp_cnf" "$MYSQL_DATABASE" "$@"
-    local rc=$?
-    rm -f "$tmp_cnf"
-    return $rc
+    mysql --defaults-extra-file="$MYSQL_TMP_CNF" "$MYSQL_DATABASE" "$@"
 }
 
-# ── 1. System state ─────────────────────────────────────────────────
+# ── 1. System state ──────────────────────────────────────────────────
 free -m > "${SNAP_DIR}/mem.txt" 2>/dev/null || true
 top -bn1 | head -20 > "${SNAP_DIR}/top.txt" 2>/dev/null || true
 vmstat 1 3 > "${SNAP_DIR}/vmstat.txt" 2>/dev/null || true
@@ -73,7 +82,7 @@ if [[ -f /proc/loadavg ]]; then
     read -r load_1m _ < /proc/loadavg 2>/dev/null || true
 fi
 
-# ── 2. JVM / Tomcat ─────────────────────────────────────────────────
+# ── 2. JVM / Tomcat ──────────────────────────────────────────────────
 PID=$(pgrep -f "$TOMCAT_PATTERN" | head -1 || true)
 heap_old_pct=""
 tomcat_rss_kb=""
@@ -90,16 +99,15 @@ if [[ -n "$PID" ]]; then
     fi
 fi
 
-# ── 3. MySQL state ──────────────────────────────────────────────────
+# ── 3. MySQL state ───────────────────────────────────────────────────
 mysql_active=""
 mysql_cmd -e "SHOW FULL PROCESSLIST;" > "${SNAP_DIR}/mysql_procs.txt" 2>/dev/null || true
 mysql_cmd -e "SHOW ENGINE INNODB STATUS\G" > "${SNAP_DIR}/innodb.txt" 2>/dev/null || true
 
-if [[ -f "${SNAP_DIR}/mysql_procs.txt" ]]; then
-    mysql_active=$(grep -cv -E '^\+|^$|Sleep|system user|event_scheduler|Id|Command' "${SNAP_DIR}/mysql_procs.txt" 2>/dev/null || echo "0")
-fi
+# Count active queries via SQL (more reliable than parsing tabular output)
+mysql_active=$(mysql_cmd -N -e "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE COMMAND != 'Sleep' AND USER != 'system user'" 2>/dev/null || echo "")
 
-# ── 4. HTTP probe ───────────────────────────────────────────────────
+# ── 4. HTTP probe ────────────────────────────────────────────────────
 http_status=""
 http_time_ms=""
 if command -v curl &>/dev/null; then
@@ -109,10 +117,10 @@ if command -v curl &>/dev/null; then
     http_time_ms=$(echo "$http_response" | awk '{printf "%.0f", $2 * 1000}')
 fi
 
-# ── 5. Append to daily CSV ──────────────────────────────────────────
+# ── 5. Append to daily CSV ───────────────────────────────────────────
 echo "${TS_DATE}_${TS_TIME},${heap_old_pct:-},${mem_free_mb:-},${mem_available_mb:-},${load_1m:-},${mysql_active:-},${PID:-},${tomcat_rss_kb:-},${http_status:-},${http_time_ms:-}" >> "$CSV"
 
-# ── 6. Housekeeping ─────────────────────────────────────────────────
+# ── 6. Housekeeping ──────────────────────────────────────────────────
 # Compress snapshot directories older than 1 hour
 find "${SNAP_BASE}" -mindepth 2 -maxdepth 2 -type d \
     -mmin +60 \

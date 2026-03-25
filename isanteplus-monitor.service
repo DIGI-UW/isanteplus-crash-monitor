@@ -9,7 +9,9 @@ Restart=on-failure
 RestartSec=10
 NoNewPrivileges=yes
 ProtectHome=yes
-ProtectSystem=strict
+# Use 'full' instead of 'strict' — the monitor needs to call
+# systemctl restart tomcat7, which requires write access to systemd paths.
+ProtectSystem=full
 ReadWritePaths=/var/log/isanteplus-monitor /tmp
 
 [Install]

@@ -1,0 +1,16 @@
+[Unit]
+Description=iSantePlus Server Monitor
+After=network.target tomcat7.service mysql.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/isanteplus-monitor.sh
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/log/isanteplus-monitor /tmp
+
+[Install]
+WantedBy=multi-user.target

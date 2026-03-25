@@ -11,7 +11,7 @@ Both components share the same config file.
 ## Quick Start
 
 ```bash
-git clone https://github.com/ibacher/isanteplus-crash-monitor.git
+git clone https://github.com/digi-uw/isanteplus-crash-monitor.git
 cd isanteplus-crash-monitor
 sudo ./install.sh
 

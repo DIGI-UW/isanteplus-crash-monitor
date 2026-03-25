@@ -52,6 +52,10 @@ systemctl daemon-reload
 systemctl enable isanteplus-monitor.service
 echo "Systemd service installed and enabled"
 
+# ── Create log directory ─────────────────────────────────────────────
+mkdir -p /var/log/isanteplus-monitor/{incidents,snapshots}
+echo "Log directory created: /var/log/isanteplus-monitor/"
+
 # ── Install cron for continuous snapshots ────────────────────────────
 cat > /etc/cron.d/isanteplus-snapshot << 'EOF'
 # iSantePlus continuous monitoring — captures system/JVM/MySQL state every minute
@@ -61,10 +65,6 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EOF
 chmod 644 /etc/cron.d/isanteplus-snapshot
 echo "Cron job installed: /etc/cron.d/isanteplus-snapshot"
-
-# ── Create log directory ─────────────────────────────────────────────
-mkdir -p /var/log/isanteplus-monitor/{incidents,snapshots}
-echo "Log directory created: /var/log/isanteplus-monitor/"
 
 echo ""
 echo "=== Install complete ==="

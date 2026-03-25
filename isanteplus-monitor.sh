@@ -130,8 +130,9 @@ collect_diagnostics() {
         fi
 
         # Heap dump (optional — produces large files, 1-2GB)
+        # -J-d64 is required for JDK 8's 64-bit JVM
         if [[ "${ENABLE_HEAP_DUMP}" == "true" ]]; then
-            if jmap -dump:format=b,file="${incident_dir}/heap.hprof" "$tomcat_pid" 2>&1; then
+            if jmap -J-d64 -dump:format=b,file="${incident_dir}/heap.hprof" "$tomcat_pid" 2>&1; then
                 echo "  Captured heap dump for PID $tomcat_pid"
             else
                 echo "  Warning: jmap heap dump failed for PID $tomcat_pid" >&2
@@ -139,7 +140,8 @@ collect_diagnostics() {
         fi
 
         # Object histogram (lighter alternative to full heap dump)
-        timeout 60 jmap -histo "$tomcat_pid" | head -50 > "${incident_dir}/heap_histo.txt" 2>/dev/null || true
+        # -J-d64 is required for JDK 8's 64-bit JVM
+        timeout 60 jmap -J-d64 -histo "$tomcat_pid" | head -50 > "${incident_dir}/heap_histo.txt" 2>/dev/null || true
 
         # Process info from /proc
         if [[ -f "/proc/${tomcat_pid}/status" ]]; then

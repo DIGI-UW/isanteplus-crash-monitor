@@ -14,6 +14,8 @@ MYSQL_USER="root"
 MYSQL_PASSWORD=""
 MYSQL_DATABASE="openmrs"
 MYSQL_HOST="localhost"
+RETENTION_DAYS=7
+ENABLE_HEAP_DUMP=false
 
 # Max time to wait for Tomcat to come back after a restart (in seconds)
 RESTART_TIMEOUT=300
@@ -67,7 +69,7 @@ mysql_cmd() {
 collect_diagnostics() {
     local timestamp
     timestamp=$(date +"%Y-%m-%dT%H:%M:%S")
-    local incident_dir="${OUTPUT_DIR}/${timestamp}"
+    local incident_dir="${OUTPUT_DIR}/incidents/${timestamp}"
 
     mkdir -p "$incident_dir"
     echo "Collecting diagnostics in $incident_dir"
@@ -80,35 +82,69 @@ collect_diagnostics() {
         echo "  Warning: $OPENMRS_LOG not found" >&2
     fi
 
-    # 2. InnoDB status
+    # 2. System state
+    free -m > "${incident_dir}/memory.txt" 2>/dev/null || true
+    uptime > "${incident_dir}/uptime.txt" 2>/dev/null || true
+    vmstat 1 3 > "${incident_dir}/vmstat.txt" 2>/dev/null || true
+    df -h > "${incident_dir}/disk.txt" 2>/dev/null || true
+    echo "  Captured system state"
+
+    # 3. Process listing (CPU-sorted)
+    ps aux --sort=-%cpu > "${incident_dir}/ps_aux.txt" 2>&1 || true
+    echo "  Captured process listing"
+
+    # 4. InnoDB status
     if mysql_cmd -e "SHOW ENGINE INNODB STATUS\G" > "${incident_dir}/innodb_status.txt" 2>&1; then
         echo "  Captured InnoDB status"
     else
         echo "  Warning: failed to capture InnoDB status" >&2
     fi
 
-    # 3. Full process list
+    # 5. Full process list
     if mysql_cmd -e "SHOW FULL PROCESSLIST\G" > "${incident_dir}/processlist.txt" 2>&1; then
         echo "  Captured MySQL process list"
     else
         echo "  Warning: failed to capture MySQL process list" >&2
     fi
 
-    # 4. CPU and memory usage for all processes
-    ps aux --sort=-%cpu > "${incident_dir}/ps_aux.txt" 2>&1 || true
-    echo "  Captured process listing"
+    # 6. Active transactions and lock waits
+    mysql_cmd -e "SELECT * FROM information_schema.INNODB_TRX\G" > "${incident_dir}/active_trx.txt" 2>/dev/null || true
+    mysql_cmd -e "SELECT * FROM performance_schema.data_lock_waits\G" > "${incident_dir}/lock_waits.txt" 2>/dev/null || true
 
-    # 5. Heap dump
+    # 7. JVM diagnostics
     local tomcat_pid
     tomcat_pid=$(find_tomcat_pid)
     if [[ -n "$tomcat_pid" ]]; then
-        if jmap -J-d64 -dump:format=b,file="${incident_dir}/heap.hprof" "$tomcat_pid" 2>&1; then
-            echo "  Captured heap dump for PID $tomcat_pid"
+        # GC statistics (lightweight — reads from JVM shared memory)
+        jstat -gcutil "$tomcat_pid" > "${incident_dir}/gc_stats.txt" 2>/dev/null || true
+        jstat -gccapacity "$tomcat_pid" > "${incident_dir}/gc_capacity.txt" 2>/dev/null || true
+        echo "  Captured GC statistics for PID $tomcat_pid"
+
+        # Thread dump (much lighter than heap dump, shows deadlocks)
+        if timeout 30 jstack "$tomcat_pid" > "${incident_dir}/threads.txt" 2>&1; then
+            echo "  Captured thread dump for PID $tomcat_pid"
         else
-            echo "  Warning: jmap failed for PID $tomcat_pid" >&2
+            echo "  Warning: jstack failed for PID $tomcat_pid" >&2
+        fi
+
+        # Heap dump (optional — produces large files, 1-2GB)
+        if [[ "${ENABLE_HEAP_DUMP}" == "true" ]]; then
+            if jmap -J-d64 -dump:format=b,file="${incident_dir}/heap.hprof" "$tomcat_pid" 2>&1; then
+                echo "  Captured heap dump for PID $tomcat_pid"
+            else
+                echo "  Warning: jmap heap dump failed for PID $tomcat_pid" >&2
+            fi
+        fi
+
+        # Object histogram (lighter alternative to full heap dump)
+        timeout 60 jmap -histo "$tomcat_pid" | head -50 > "${incident_dir}/heap_histo.txt" 2>/dev/null || true
+
+        # Process info from /proc
+        if [[ -f "/proc/${tomcat_pid}/status" ]]; then
+            grep -E '^(VmRSS|VmSize|Threads)' "/proc/${tomcat_pid}/status" > "${incident_dir}/jvm_proc.txt" 2>/dev/null || true
         fi
     else
-        echo "  Warning: could not find Tomcat PID for heap dump" >&2
+        echo "  Warning: could not find Tomcat PID for JVM diagnostics" >&2
     fi
 
     echo "Diagnostics collection complete: $incident_dir"
@@ -147,25 +183,46 @@ wait_for_new_pid() {
     done
 }
 
+housekeeping() {
+    # Compress incident directories older than 1 hour
+    find "${OUTPUT_DIR}/incidents" -mindepth 1 -maxdepth 1 -type d \
+        -mmin +60 \
+        -exec sh -c '
+            for dir; do
+                base=$(basename "$dir")
+                parent=$(dirname "$dir")
+                tar czf "${parent}/${base}.tar.gz" -C "$parent" "$base" 2>/dev/null && rm -rf "$dir"
+            done
+        ' _ {} + 2>/dev/null || true
+
+    # Purge old compressed incidents
+    find "${OUTPUT_DIR}/incidents" -name "*.tar.gz" -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null || true
+
+    # Purge old snapshot date directories
+    find "${OUTPUT_DIR}/snapshots" -mindepth 1 -maxdepth 1 -type d -mtime "+${RETENTION_DAYS}" -exec rm -rf {} + 2>/dev/null || true
+}
+
 main() {
     load_config
-    mkdir -p "$OUTPUT_DIR"
+    mkdir -p "$OUTPUT_DIR" "${OUTPUT_DIR}/incidents"
 
     echo "isanteplus-monitor started"
     echo "  URL:            $SESSION_URL"
     echo "  Timeout:        ${TIMEOUT}s"
     echo "  Poll interval:  ${POLL_INTERVAL}s"
     echo "  Restart Tomcat: $RESTART_TOMCAT"
+    echo "  Heap dumps:     $ENABLE_HEAP_DUMP"
     echo "  Output dir:     $OUTPUT_DIR"
+    echo "  Retention:      ${RETENTION_DAYS} days"
 
     while true; do
         local http_code
         http_code=$(curl -s -o /dev/null -w "%{http_code}" \
             --max-time "$TIMEOUT" "$SESSION_URL" 2>/dev/null) || true
 
-        if [[ "$http_code" == "000" || -z "$http_code" ]]; then
-            # Timeout or connection failure
-            echo "$(date): Request to $SESSION_URL timed out or failed (code: $http_code)"
+        if [[ "$http_code" == "000" || -z "$http_code" || "$http_code" -ge 500 ]] 2>/dev/null; then
+            # Timeout, connection failure, or server error
+            echo "$(date): $SESSION_URL unhealthy (HTTP $http_code)"
 
             local old_pid
             old_pid=$(find_tomcat_pid)
@@ -179,6 +236,9 @@ main() {
 
             echo "$(date): Resuming monitoring"
         fi
+
+        # Periodic housekeeping (cheap — just find + delete)
+        housekeeping
 
         sleep "$POLL_INTERVAL"
     done

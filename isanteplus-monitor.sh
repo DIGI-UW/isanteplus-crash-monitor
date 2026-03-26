@@ -17,12 +17,15 @@ MYSQL_HOST="localhost"
 RETENTION_DAYS=7
 ENABLE_HEAP_DUMP=false
 TOMCAT_PATTERN="catalina.startup.Bootstrap"
-
-# Max time to wait for Tomcat to come back after a restart (in seconds)
 RESTART_TIMEOUT=300
 
 # Housekeeping throttle: only run once per hour
 _LAST_HOUSEKEEPING=0
+
+# Post-restart cooldown: skip health checks until this epoch time.
+# Applies after both monitor-triggered and externally-triggered restarts.
+_COOLDOWN_UNTIL=0
+_LAST_KNOWN_PID=""
 
 load_config() {
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -39,6 +42,11 @@ load_config() {
         source "$CONFIG_FILE"
     else
         echo "Warning: config file $CONFIG_FILE not found, using defaults" >&2
+    fi
+
+    # Add JAVA_HOME/bin to PATH if configured
+    if [[ -n "${JAVA_HOME:-}" && -d "${JAVA_HOME}/bin" ]]; then
+        export PATH="${JAVA_HOME}/bin:${PATH}"
     fi
 }
 
@@ -211,7 +219,7 @@ housekeeping() {
             for dir; do
                 base=$(basename "$dir")
                 parent=$(dirname "$dir")
-                tar czf "${parent}/${base}.tar.gz" -C "$parent" "$base" 2>/dev/null && rm -rf "$dir"
+                tar czf "${parent}/${base}.tar.gz" --force-local -C "$parent" "$base" 2>/dev/null && rm -rf "$dir"
             done
         ' _ {} + 2>/dev/null || true
 
@@ -236,39 +244,67 @@ main() {
     echo "  Output dir:     $OUTPUT_DIR"
     echo "  Retention:      ${RETENTION_DAYS} days"
 
+    _LAST_KNOWN_PID=$(find_tomcat_pid)
+
     while true; do
-        # Skip health check if tomcat7 is in a transitional or intentionally-stopped
-        # state — restarting during activating/deactivating would just pile up restarts.
+        # ── 1. Detect PID changes (external restarts or fresh starts) ────
+        local current_pid
+        current_pid=$(find_tomcat_pid)
+        if [[ -n "$current_pid" && "$current_pid" != "${_LAST_KNOWN_PID:-}" ]]; then
+            _COOLDOWN_UNTIL=$(( $(date +%s) + RESTART_TIMEOUT ))
+            if [[ -n "$_LAST_KNOWN_PID" ]]; then
+                echo "$(date): Detected external restart (PID ${_LAST_KNOWN_PID} -> ${current_pid}), cooling down for ${RESTART_TIMEOUT}s"
+            else
+                echo "$(date): Tomcat7 started (PID ${current_pid}), cooling down for ${RESTART_TIMEOUT}s"
+            fi
+        fi
+        _LAST_KNOWN_PID="$current_pid"
+
+        # ── 2. Decide whether to skip health check ──────────────────────
+        local skip_health_check=false
         local svc_state
         svc_state=$(systemctl show -p ActiveState --value tomcat7 2>/dev/null || echo "unknown")
+        local now
+        now=$(date +%s)
+
         if [[ "$svc_state" =~ ^(activating|deactivating|inactive)$ ]]; then
-            sleep "$POLL_INTERVAL"
-            continue
-        fi
-
-        local http_code
-        http_code=$(curl -s -o /dev/null -w "%{http_code}" \
-            --max-time "$TIMEOUT" "$SESSION_URL" 2>/dev/null) || true
-
-        # Trigger on: timeout/connection failure (000), empty, or server errors (5xx)
-        # Note: 401/403 are considered "healthy" — OpenMRS is running and responding.
-        # The -ge comparison is guarded by the earlier checks for non-numeric values.
-        if [[ "$http_code" == "000" || -z "$http_code" ]] || [[ "$http_code" =~ ^[0-9]+$ && "$http_code" -ge 500 ]]; then
-            echo "$(date): $SESSION_URL unhealthy (HTTP $http_code)"
-
-            local old_pid
-            old_pid=$(find_tomcat_pid)
-
-            collect_diagnostics
-
-            if [[ "$RESTART_TOMCAT" == "true" ]]; then
-                restart_tomcat
-                wait_for_new_pid "$old_pid" || true
-            fi
-
+            skip_health_check=true
+        elif [[ "$now" -lt "$_COOLDOWN_UNTIL" ]]; then
+            skip_health_check=true
+        elif [[ "$_COOLDOWN_UNTIL" -gt 0 ]]; then
+            # Cooldown just expired
+            _COOLDOWN_UNTIL=0
             echo "$(date): Resuming monitoring"
         fi
 
+        # ── 3. Health check ──────────────────────────────────────────────
+        if [[ "$skip_health_check" == "false" ]]; then
+            local http_code
+            http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+                --max-time "$TIMEOUT" "$SESSION_URL" 2>/dev/null) || true
+
+            # Trigger on: timeout/connection failure (000), empty, or server errors (5xx)
+            # Note: 401/403 are considered "healthy" — OpenMRS is running and responding.
+            # The -ge comparison is guarded by the earlier checks for non-numeric values.
+            if [[ "$http_code" == "000" || -z "$http_code" ]] || [[ "$http_code" =~ ^[0-9]+$ && "$http_code" -ge 500 ]]; then
+                echo "$(date): $SESSION_URL unhealthy (HTTP $http_code)"
+
+                local old_pid
+                old_pid=$(find_tomcat_pid)
+
+                collect_diagnostics
+
+                if [[ "$RESTART_TOMCAT" == "true" ]]; then
+                    restart_tomcat
+                    wait_for_new_pid "$old_pid" || true
+                    _LAST_KNOWN_PID=$(find_tomcat_pid)
+                    _COOLDOWN_UNTIL=$(( $(date +%s) + RESTART_TIMEOUT ))
+                    echo "$(date): Cooling down for ${RESTART_TIMEOUT}s to let OpenMRS initialize"
+                fi
+            fi
+        fi
+
+        # ── 4. Housekeeping (always runs) ────────────────────────────────
         housekeeping
 
         sleep "$POLL_INTERVAL"

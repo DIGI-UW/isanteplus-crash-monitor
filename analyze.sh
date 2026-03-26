@@ -216,7 +216,7 @@ case "${1:-}" in
         echo "  $0 --help                    Show this help"
         ;;
     "")
-        latest=$(find "$INCIDENT_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r | head -1 || true)
+        latest=$(find "$INCIDENT_DIR" -mindepth 1 -maxdepth 1 \( -type d -o -name '*.tar.gz' \) 2>/dev/null | sed 's/\.tar\.gz$//' | sort -r | head -1 || true)
         if [[ -z "$latest" ]]; then
             echo "No incidents found in: $INCIDENT_DIR"
             exit 0

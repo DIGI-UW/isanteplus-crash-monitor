@@ -68,6 +68,7 @@ Config file: `/etc/isanteplus-monitor.conf`
 | `TIMEOUT` | `15` | HTTP timeout (seconds) |
 | `POLL_INTERVAL` | `15` | Seconds between health checks |
 | `RESTART_TOMCAT` | `true` | Auto-restart on crash |
+| `RESTART_TIMEOUT` | `300` | Post-restart cooldown (seconds) |
 | `ENABLE_HEAP_DUMP` | `false` | Capture full heap dump (large!) |
 | `RETENTION_DAYS` | `7` | Days to keep old data |
 | `TOMCAT_PATTERN` | `catalina.startup.Bootstrap` | Pattern to find Tomcat PID |

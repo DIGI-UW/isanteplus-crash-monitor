@@ -72,6 +72,11 @@ EOF
 chmod 644 /etc/cron.d/isanteplus-snapshot
 echo "Cron job installed: /etc/cron.d/isanteplus-snapshot"
 
+if [[ "$was_running" == "true" ]]; then
+    systemctl start isanteplus-monitor.service
+    echo "Restarted isanteplus-monitor service"
+fi
+
 echo ""
 echo "=== Install complete ==="
 echo ""

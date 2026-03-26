@@ -47,6 +47,12 @@ else
 fi
 
 # ── Install systemd service ──────────────────────────────────────────
+was_running=false
+if systemctl is-active --quiet isanteplus-monitor.service 2>/dev/null; then
+    was_running=true
+    systemctl stop isanteplus-monitor.service
+    echo "Stopped running isanteplus-monitor service for upgrade"
+fi
 cp "${SOURCE_DIR}/isanteplus-monitor.service" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable isanteplus-monitor.service

@@ -232,6 +232,15 @@ main() {
     echo "  Retention:      ${RETENTION_DAYS} days"
 
     while true; do
+        # Skip health check if tomcat7 is in a transitional or intentionally-stopped
+        # state — restarting during activating/deactivating would just pile up restarts.
+        local svc_state
+        svc_state=$(systemctl show -p ActiveState --value tomcat7 2>/dev/null || echo "unknown")
+        if [[ "$svc_state" =~ ^(activating|deactivating|inactive)$ ]]; then
+            sleep "$POLL_INTERVAL"
+            continue
+        fi
+
         local http_code
         http_code=$(curl -s -o /dev/null -w "%{http_code}" \
             --max-time "$TIMEOUT" "$SESSION_URL" 2>/dev/null) || true

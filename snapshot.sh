@@ -37,8 +37,9 @@ if [[ -n "${JAVA_HOME:-}" && -d "${JAVA_HOME}/bin" ]]; then
 fi
 
 # ── Timestamp & directories ──────────────────────────────────────────
-TS_DATE=$(date +%Y%m%d)
-TS_TIME=$(date +%H%M%S)
+TS_FULL=$(date +%Y%m%d_%H%M%S)
+TS_DATE="${TS_FULL%%_*}"
+TS_TIME="${TS_FULL##*_}"
 SNAP_BASE="${OUTPUT_DIR}/snapshots"
 SNAP_DIR="${SNAP_BASE}/${TS_DATE}/${TS_TIME}"
 mkdir -p "$SNAP_DIR"
@@ -91,7 +92,7 @@ if [[ -n "$PID" ]]; then
     jstat -gcutil "$PID" > "${SNAP_DIR}/gc.txt" 2>/dev/null || true
 
     # Old generation % (column 4 of gcutil) — best crash predictor
-    heap_old_pct=$(jstat -gcutil "$PID" 2>/dev/null | tail -1 | awk '{printf "%.1f", $4}' || echo "")
+    heap_old_pct=$(awk 'NR==2 {printf "%.1f", $4}' "${SNAP_DIR}/gc.txt" 2>/dev/null || echo "")
 
     if [[ -f "/proc/${PID}/status" ]]; then
         grep -E '^(VmRSS|VmSize|Threads)' "/proc/${PID}/status" > "${SNAP_DIR}/jvm_proc.txt" 2>/dev/null || true

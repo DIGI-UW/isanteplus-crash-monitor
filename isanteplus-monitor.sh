@@ -7,7 +7,7 @@ CONFIG_FILE="${ISANTEPLUS_MONITOR_CONFIG:-/etc/isanteplus-monitor.conf}"
 SESSION_URL="http://localhost:8080/openmrs/ws/rest/v1/session"
 TIMEOUT=15
 POLL_INTERVAL=15
-OUTPUT_DIR="/var/log/isanteplus-monitor"
+OUTPUT_DIR="/var/log/isanteplus-monitor/incidents"
 OPENMRS_LOG="/usr/share/tomcat7/.OpenMRS/openmrs.log"
 RESTART_TOMCAT=true
 MYSQL_USER="root"
@@ -48,12 +48,13 @@ find_tomcat_pid() {
 
 # Write a temporary MySQL option file and pass it to mysql via
 # --defaults-extra-file so the password never appears in the process table.
-mysql_cmd() {
-    local tmp_cnf
-    tmp_cnf=$(mktemp /tmp/isanteplus-mysql.XXXXXX)
-    chmod 600 "$tmp_cnf"
-    # Ensure temp file is always cleaned up, even if mysql fails under set -e
-    trap 'rm -f "$tmp_cnf"' RETURN
+# One temp file is created after config load and reused across all calls.
+MYSQL_TMP_CNF=""
+
+setup_mysql_cnf() {
+    MYSQL_TMP_CNF=$(mktemp /tmp/isanteplus-mysql.XXXXXX)
+    chmod 600 "$MYSQL_TMP_CNF"
+    trap 'rm -f "$MYSQL_TMP_CNF"' EXIT
 
     {
         echo "[client]"
@@ -62,9 +63,11 @@ mysql_cmd() {
         if [[ -n "$MYSQL_PASSWORD" ]]; then
             echo "password=${MYSQL_PASSWORD}"
         fi
-    } > "$tmp_cnf"
+    } > "$MYSQL_TMP_CNF"
+}
 
-    mysql --defaults-extra-file="$tmp_cnf" "$MYSQL_DATABASE" "$@"
+mysql_cmd() {
+    mysql --defaults-extra-file="$MYSQL_TMP_CNF" "$MYSQL_DATABASE" "$@"
 }
 
 collect_diagnostics() {
@@ -216,6 +219,7 @@ housekeeping() {
 
 main() {
     load_config
+    setup_mysql_cnf
     mkdir -p "$OUTPUT_DIR" "${OUTPUT_DIR}/incidents"
 
     echo "isanteplus-monitor started"

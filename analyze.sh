@@ -72,6 +72,9 @@ csv_ts_to_epoch() {
     date -d "$formatted" +%s 2>/dev/null || echo "0"
 }
 
+_ANALYZE_CLEANUP=""
+trap 'rm -rf -- "$_ANALYZE_CLEANUP"' EXIT
+
 analyze_incident() {
     local incident_path="$1"
 
@@ -80,9 +83,9 @@ analyze_incident() {
             echo -e "${YELLOW}Incident is compressed. Extracting temporarily...${RESET}"
             local tmp
             tmp=$(mktemp -d)
+            _ANALYZE_CLEANUP="$tmp"
             tar xzf "${incident_path}.tar.gz" -C "$tmp" 2>/dev/null
             incident_path="${tmp}/$(basename "$incident_path")"
-            trap "rm -rf '$tmp'" EXIT
         else
             echo -e "${RED}Incident not found: $incident_path${RESET}"
             return 1

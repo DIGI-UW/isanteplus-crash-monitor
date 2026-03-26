@@ -2,7 +2,7 @@
 
 Monitoring toolkit for iSantePlus production servers. Two components:
 
-1. **Crash monitor** (`isanteplus-monitor.sh`) — systemd service that polls the OpenMRS REST endpoint every 15 seconds. On failure: captures diagnostics (thread dumps, GC stats, MySQL state, InnoDB status), optionally restarts Tomcat.
+1. **Crash monitor** (`isanteplus-monitor.sh`) — systemd service that polls the OpenMRS REST endpoint every 15 seconds. On failure: captures diagnostics (thread dumps, GC stats, MySQL state, InnoDB status), optionally restarts Tomcat. Automatically skips health checks when the Tomcat7 service is in a transitional state (starting, stopping, or intentionally stopped) to avoid unnecessary restarts.
 
 2. **Continuous snapshots** (`snapshot.sh`) — cron job that captures system/JVM/MySQL state every minute into a metrics CSV. Provides baseline data so you can see the trend *leading up to* a crash.
 
@@ -23,6 +23,8 @@ sudo systemctl start isanteplus-monitor
 
 # Snapshots start automatically via cron
 ```
+
+The install script is safe to re-run for upgrades — it will stop the running service, update scripts and the systemd unit, then restart it. The config file is never overwritten if it already exists.
 
 ## What Gets Captured
 
@@ -105,9 +107,17 @@ Both scripts automatically:
 ## Uninstall
 
 ```bash
+sudo ./uninstall.sh
+# Logs preserved at /var/log/isanteplus-monitor/ — delete manually if desired
+```
+
+Or manually:
+
+```bash
 sudo systemctl stop isanteplus-monitor
 sudo systemctl disable isanteplus-monitor
 sudo rm -f /etc/systemd/system/isanteplus-monitor.service
+sudo systemctl daemon-reload
 sudo rm -f /etc/cron.d/isanteplus-snapshot
 sudo rm -f /usr/local/bin/isanteplus-{monitor,snapshot,analyze}.sh
 sudo rm -f /etc/isanteplus-monitor.conf

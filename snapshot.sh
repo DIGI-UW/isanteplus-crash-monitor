@@ -31,11 +31,6 @@ if [[ -f "$CONFIG_FILE" ]]; then
     source "$CONFIG_FILE"
 fi
 
-# Skip if Tomcat7 isn't running (no useful JVM data to collect)
-if ! systemctl is-active --quiet tomcat7 2>/dev/null; then
-    exit 0
-fi
-
 # Add JAVA_HOME/bin to PATH if configured
 if [[ -n "${JAVA_HOME:-}" && -d "${JAVA_HOME}/bin" ]]; then
     export PATH="${JAVA_HOME}/bin:${PATH}"

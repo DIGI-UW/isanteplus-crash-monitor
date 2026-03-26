@@ -130,7 +130,8 @@ collect_diagnostics() {
         echo "  Captured GC statistics for PID $tomcat_pid"
 
         # Thread dump (much lighter than heap dump, shows deadlocks)
-        if timeout 30 jstack "$tomcat_pid" > "${incident_dir}/threads.txt" 2>&1; then
+        # -J-d64 is required for JDK 8's 64-bit JVM
+        if timeout 30 jstack -J-d64 "$tomcat_pid" > "${incident_dir}/threads.txt" 2>&1; then
             echo "  Captured thread dump for PID $tomcat_pid"
         else
             echo "  Warning: jstack failed for PID $tomcat_pid" >&2

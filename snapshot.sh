@@ -64,7 +64,13 @@ trap 'rm -f "$MYSQL_TMP_CNF"' EXIT
     echo "[client]"
     echo "user=${MYSQL_USER}"
     echo "host=${MYSQL_HOST}"
-    [[ -n "$MYSQL_PASSWORD" ]] && echo "password=${MYSQL_PASSWORD}"
+    if [[ -n "$MYSQL_PASSWORD" ]]; then
+        # Quote the password for the MySQL option file so special characters
+        # (#, ;, \, spaces, quotes) are not interpreted.
+        local escaped_pw="${MYSQL_PASSWORD//\\/\\\\}"
+        escaped_pw="${escaped_pw//\'/\\'}"
+        echo "password='${escaped_pw}'"
+    fi
 } > "$MYSQL_TMP_CNF"
 
 mysql_cmd() {

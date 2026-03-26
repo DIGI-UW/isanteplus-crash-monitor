@@ -61,7 +61,11 @@ setup_mysql_cnf() {
         echo "user=${MYSQL_USER}"
         echo "host=${MYSQL_HOST}"
         if [[ -n "$MYSQL_PASSWORD" ]]; then
-            echo "password=${MYSQL_PASSWORD}"
+            # Quote the password for the MySQL option file so special characters
+            # (#, ;, \, spaces, quotes) are not interpreted.
+            local escaped_pw="${MYSQL_PASSWORD//\\/\\\\}"
+            escaped_pw="${escaped_pw//\'/\\'}"
+            echo "password='${escaped_pw}'"
         fi
     } > "$MYSQL_TMP_CNF"
 }

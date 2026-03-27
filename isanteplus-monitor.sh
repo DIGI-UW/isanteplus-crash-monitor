@@ -295,8 +295,23 @@ main() {
                 collect_diagnostics
 
                 if [[ "$RESTART_TOMCAT" == "true" ]]; then
-                    restart_tomcat
-                    wait_for_new_pid "$old_pid" || true
+                    # Re-check state before restarting: diagnostics collection
+                    # can take over a minute, and someone may have already
+                    # restarted Tomcat in the meantime.
+                    local pre_restart_state
+                    pre_restart_state=$(systemctl show -p ActiveState --value tomcat7 2>/dev/null || echo "unknown")
+                    local pre_restart_pid
+                    pre_restart_pid=$(find_tomcat_pid)
+
+                    if [[ "$pre_restart_state" =~ ^(activating|deactivating|inactive)$ ]]; then
+                        echo "$(date): Skipping restart — service is ${pre_restart_state} (external restart in progress)"
+                    elif [[ -n "$pre_restart_pid" && "$pre_restart_pid" != "$old_pid" ]]; then
+                        echo "$(date): Skipping restart — PID changed during diagnostics (${old_pid:-none} -> ${pre_restart_pid})"
+                    else
+                        restart_tomcat
+                        wait_for_new_pid "$old_pid" || true
+                    fi
+
                     _LAST_KNOWN_PID=$(find_tomcat_pid)
                     _COOLDOWN_UNTIL=$(( $(date +%s) + RESTART_TIMEOUT ))
                     echo "$(date): Cooling down for ${RESTART_TIMEOUT}s to let OpenMRS initialize"

@@ -27,6 +27,11 @@ _LAST_HOUSEKEEPING=0
 _COOLDOWN_UNTIL=0
 _LAST_KNOWN_PID=""
 
+# Set after any restart; cleared only by a successful health check.
+# Prevents restart loops when OpenMRS takes longer than RESTART_TIMEOUT
+# to initialize.
+_AWAITING_FIRST_SUCCESS=false
+
 load_config() {
     if [[ -f "$CONFIG_FILE" ]]; then
         # Warn if the config file is readable by group or others, since it
@@ -79,7 +84,7 @@ setup_mysql_cnf() {
 }
 
 mysql_cmd() {
-    mysql --defaults-extra-file="$MYSQL_TMP_CNF" "$MYSQL_DATABASE" "$@"
+    mysql --defaults-file="$MYSQL_TMP_CNF" "$MYSQL_DATABASE" "$@"
 }
 
 collect_diagnostics() {
@@ -252,6 +257,7 @@ main() {
         current_pid=$(find_tomcat_pid)
         if [[ -n "$current_pid" && "$current_pid" != "${_LAST_KNOWN_PID:-}" ]]; then
             _COOLDOWN_UNTIL=$(( $(date +%s) + RESTART_TIMEOUT ))
+            _AWAITING_FIRST_SUCCESS=true
             if [[ -n "$_LAST_KNOWN_PID" ]]; then
                 echo "$(date): Detected external restart (PID ${_LAST_KNOWN_PID} -> ${current_pid}), cooling down for ${RESTART_TIMEOUT}s"
             else
@@ -289,32 +295,45 @@ main() {
             if [[ "$http_code" == "000" || -z "$http_code" ]] || [[ "$http_code" =~ ^[0-9]+$ && "$http_code" -ge 500 ]]; then
                 echo "$(date): $SESSION_URL unhealthy (HTTP $http_code)"
 
-                local old_pid
-                old_pid=$(find_tomcat_pid)
+                if [[ "$_AWAITING_FIRST_SUCCESS" == "true" ]]; then
+                    # Already restarted; don't restart again until we see
+                    # at least one healthy response.
+                    echo "$(date): Still waiting for first successful health check after restart — not restarting"
+                else
+                    local old_pid
+                    old_pid=$(find_tomcat_pid)
 
-                collect_diagnostics
+                    collect_diagnostics
 
-                if [[ "$RESTART_TOMCAT" == "true" ]]; then
-                    # Re-check state before restarting: diagnostics collection
-                    # can take over a minute, and someone may have already
-                    # restarted Tomcat in the meantime.
-                    local pre_restart_state
-                    pre_restart_state=$(systemctl show -p ActiveState --value tomcat7 2>/dev/null || echo "unknown")
-                    local pre_restart_pid
-                    pre_restart_pid=$(find_tomcat_pid)
+                    if [[ "$RESTART_TOMCAT" == "true" ]]; then
+                        # Re-check state before restarting: diagnostics collection
+                        # can take over a minute, and someone may have already
+                        # restarted Tomcat in the meantime.
+                        local pre_restart_state
+                        pre_restart_state=$(systemctl show -p ActiveState --value tomcat7 2>/dev/null || echo "unknown")
+                        local pre_restart_pid
+                        pre_restart_pid=$(find_tomcat_pid)
 
-                    if [[ "$pre_restart_state" =~ ^(activating|deactivating|inactive)$ ]]; then
-                        echo "$(date): Skipping restart — service is ${pre_restart_state} (external restart in progress)"
-                    elif [[ -n "$pre_restart_pid" && "$pre_restart_pid" != "$old_pid" ]]; then
-                        echo "$(date): Skipping restart — PID changed during diagnostics (${old_pid:-none} -> ${pre_restart_pid})"
-                    else
-                        restart_tomcat
-                        wait_for_new_pid "$old_pid" || true
+                        if [[ "$pre_restart_state" =~ ^(activating|deactivating|inactive)$ ]]; then
+                            echo "$(date): Skipping restart — service is ${pre_restart_state} (external restart in progress)"
+                        elif [[ -n "$pre_restart_pid" && "$pre_restart_pid" != "$old_pid" ]]; then
+                            echo "$(date): Skipping restart — PID changed during diagnostics (${old_pid:-none} -> ${pre_restart_pid})"
+                        else
+                            restart_tomcat
+                            wait_for_new_pid "$old_pid" || true
+                        fi
+
+                        _AWAITING_FIRST_SUCCESS=true
+                        _LAST_KNOWN_PID=$(find_tomcat_pid)
+                        _COOLDOWN_UNTIL=$(( $(date +%s) + RESTART_TIMEOUT ))
+                        echo "$(date): Cooling down for ${RESTART_TIMEOUT}s to let OpenMRS initialize"
                     fi
-
-                    _LAST_KNOWN_PID=$(find_tomcat_pid)
-                    _COOLDOWN_UNTIL=$(( $(date +%s) + RESTART_TIMEOUT ))
-                    echo "$(date): Cooling down for ${RESTART_TIMEOUT}s to let OpenMRS initialize"
+                fi
+            else
+                # Health check succeeded
+                if [[ "$_AWAITING_FIRST_SUCCESS" == "true" ]]; then
+                    echo "$(date): First successful health check after restart — resuming normal monitoring"
+                    _AWAITING_FIRST_SUCCESS=false
                 fi
             fi
         fi

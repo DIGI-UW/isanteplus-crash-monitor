@@ -69,7 +69,7 @@ trap 'rm -f "$MYSQL_TMP_CNF"' EXIT
 } > "$MYSQL_TMP_CNF"
 
 mysql_cmd() {
-    mysql --defaults-extra-file="$MYSQL_TMP_CNF" "$MYSQL_DATABASE" "$@"
+    mysql --defaults-file="$MYSQL_TMP_CNF" "$MYSQL_DATABASE" "$@"
 }
 
 # ── 1. System state ──────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# snapshot.sh — Capture system/JVM/MySQL state every minute
-# Runs via cron alongside the main systemd crash monitor.
+# snapshot.sh — Capture system/JVM/MySQL state periodically
+# Runs via cron alongside the main systemd crash monitor (default: every 5 min).
 # Provides continuous baseline data so you can see trends leading up to crashes.
 #
 # Output:
@@ -8,6 +8,14 @@
 #   /var/log/isanteplus-monitor/snapshots/YYYYMMDD/metrics.csv  (one row appended)
 
 set -euo pipefail
+
+# Prevent concurrent runs — if a previous invocation is still compressing
+# snapshots, skip this one entirely; it will be picked up next time.
+LOCKFILE="/tmp/isanteplus-snapshot.lock"
+exec 9>"$LOCKFILE"
+if ! flock -n 9; then
+    exit 0
+fi
 
 CONFIG_FILE="${ISANTEPLUS_MONITOR_CONFIG:-/etc/isanteplus-monitor.conf}"
 
@@ -135,7 +143,7 @@ find "${SNAP_BASE}" -mindepth 2 -maxdepth 2 -type d \
         for dir; do
             base=$(basename "$dir")
             parent=$(dirname "$dir")
-            tar czf "${parent}/${base}.tar.gz" -C "$parent" "$base" 2>/dev/null && rm -rf "$dir"
+            ionice -c 3 nice -n 19 tar czf "${parent}/${base}.tar.gz" -C "$parent" "$base" 2>/dev/null && rm -rf "$dir"
         done
     ' _ {} + 2>/dev/null || true
 

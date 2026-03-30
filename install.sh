@@ -63,14 +63,32 @@ mkdir -p /var/log/isanteplus-monitor/{incidents,snapshots}
 echo "Log directory created: /var/log/isanteplus-monitor/"
 
 # ── Install cron for continuous snapshots ────────────────────────────
-cat > /etc/cron.d/isanteplus-snapshot << 'EOF'
-# iSantePlus continuous monitoring — captures system/JVM/MySQL state every minute
+# Read SNAPSHOT_INTERVAL from config (default: 5 minutes)
+SNAPSHOT_INTERVAL=5
+if [[ -f /etc/isanteplus-monitor.conf ]]; then
+    # Extract the value, ignoring comments and whitespace
+    _val=$(grep -E '^\s*SNAPSHOT_INTERVAL=' /etc/isanteplus-monitor.conf | tail -1 | cut -d= -f2 | tr -d '[:space:]"'\''')
+    if [[ "$_val" =~ ^[0-9]+$ && "$_val" -ge 1 && "$_val" -le 59 ]]; then
+        SNAPSHOT_INTERVAL="$_val"
+    elif [[ -n "$_val" ]]; then
+        echo "WARNING: Invalid SNAPSHOT_INTERVAL='$_val' in config (must be 1-59), using default ${SNAPSHOT_INTERVAL}" >&2
+    fi
+fi
+
+if [[ "$SNAPSHOT_INTERVAL" -eq 1 ]]; then
+    CRON_SCHEDULE="* * * * *"
+else
+    CRON_SCHEDULE="*/${SNAPSHOT_INTERVAL} * * * *"
+fi
+
+cat > /etc/cron.d/isanteplus-snapshot << EOF
+# iSantePlus continuous monitoring — captures system/JVM/MySQL state every ${SNAPSHOT_INTERVAL} minutes
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-* * * * * root /usr/local/bin/isanteplus-snapshot.sh >> /var/log/isanteplus-monitor/snapshot-cron.log 2>&1
+${CRON_SCHEDULE} root /usr/local/bin/isanteplus-snapshot.sh >> /var/log/isanteplus-monitor/snapshot-cron.log 2>&1
 EOF
 chmod 644 /etc/cron.d/isanteplus-snapshot
-echo "Cron job installed: /etc/cron.d/isanteplus-snapshot"
+echo "Cron job installed: /etc/cron.d/isanteplus-snapshot (every ${SNAPSHOT_INTERVAL}m)"
 
 if [[ "$was_running" == "true" ]]; then
     systemctl start isanteplus-monitor.service
@@ -85,4 +103,4 @@ echo "  1. Edit config:         nano /etc/isanteplus-monitor.conf"
 echo "  2. Start crash monitor: systemctl start isanteplus-monitor"
 echo "  3. Check status:        systemctl status isanteplus-monitor"
 echo "  4. View incidents:      isanteplus-analyze.sh --list"
-echo "  5. Snapshots start automatically via cron (every minute)"
+echo "  5. Snapshots start automatically via cron (every ${SNAPSHOT_INTERVAL}m)"

@@ -224,7 +224,7 @@ housekeeping() {
             for dir; do
                 base=$(basename "$dir")
                 parent=$(dirname "$dir")
-                tar czf "${parent}/${base}.tar.gz" --force-local -C "$parent" "$base" 2>/dev/null && rm -rf "$dir"
+                ionice -c 3 nice -n 19 tar czf "${parent}/${base}.tar.gz" --force-local -C "$parent" "$base" 2>/dev/null && rm -rf "$dir"
             done
         ' _ {} + 2>/dev/null || true
 

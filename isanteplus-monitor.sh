@@ -18,6 +18,7 @@ RETENTION_DAYS=7
 ENABLE_HEAP_DUMP=false
 TOMCAT_PATTERN="catalina.startup.Bootstrap"
 RESTART_TIMEOUT=300
+BOOT_GRACE_PERIOD=900
 
 # Housekeeping throttle: only run once per hour
 _LAST_HOUSEKEEPING=0
@@ -108,6 +109,9 @@ collect_diagnostics() {
     uptime > "${incident_dir}/uptime.txt" 2>/dev/null || true
     vmstat 1 3 > "${incident_dir}/vmstat.txt" 2>/dev/null || true
     df -h > "${incident_dir}/disk.txt" 2>/dev/null || true
+    if command -v iotop &>/dev/null; then
+        timeout 10 iotop -b -o -n 3 > "${incident_dir}/iotop.txt" 2>/dev/null || true
+    fi
     echo "  Captured system state"
 
     # 3. Process listing (CPU-sorted)
@@ -245,11 +249,27 @@ main() {
     echo "  Timeout:        ${TIMEOUT}s"
     echo "  Poll interval:  ${POLL_INTERVAL}s"
     echo "  Restart Tomcat: $RESTART_TOMCAT"
+    echo "  Boot grace:     ${BOOT_GRACE_PERIOD}s"
     echo "  Heap dumps:     $ENABLE_HEAP_DUMP"
     echo "  Output dir:     $OUTPUT_DIR"
     echo "  Retention:      ${RETENTION_DAYS} days"
 
     _LAST_KNOWN_PID=$(find_tomcat_pid)
+
+    # ── Boot grace period ────────────────────────────────────────────
+    # If the system booted recently, delay health checks so OpenMRS has
+    # time to finish loading modules before the monitor declares it
+    # unhealthy.
+    if [[ "$BOOT_GRACE_PERIOD" -gt 0 ]] && [[ -f /proc/uptime ]]; then
+        local uptime_secs
+        uptime_secs=$(awk '{print int($1)}' /proc/uptime)
+        if [[ "$uptime_secs" -lt "$BOOT_GRACE_PERIOD" ]]; then
+            local remaining=$((BOOT_GRACE_PERIOD - uptime_secs))
+            _COOLDOWN_UNTIL=$(( $(date +%s) + remaining ))
+            _AWAITING_FIRST_SUCCESS=true
+            echo "System booted ${uptime_secs}s ago — deferring health checks for ${remaining}s (BOOT_GRACE_PERIOD=${BOOT_GRACE_PERIOD}s)"
+        fi
+    fi
 
     while true; do
         # ── 1. Detect PID changes (external restarts or fresh starts) ────
